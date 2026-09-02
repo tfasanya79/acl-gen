@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>acl-gen. : Firewall Rule and ACL Syntax Translator</title>
+<meta name="description" content="Build a firewall rule once and see the equivalent Cisco IOS ACL, pfSense rule, and iptables command side by side.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #0B1220;
+    --panel: #131B2C;
+    --panel-2: #0F1729;
+    --border: #26334A;
+    --text: #E7EDF5;
+    --text-muted: #7C8CA6;
+    --good: #5EEAD4;
+    --good-dim: #1F4A45;
+    --warn: #F5A97F;
+    --warn-dim: #4A3423;
+    --bad: #F87171;
+    --bad-dim: #4A1F1F;
+    --radius: 6px;
+  }
+
+  * { box-sizing: border-box; }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: 'IBM Plex Sans', sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  .mono { font-family: 'IBM Plex Mono', monospace; }
+
+  header {
+    padding: 28px clamp(20px, 4vw, 48px) 20px;
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  header .wordmark {
+    font-size: 22px;
+    font-weight: 600;
+    letter-spacing: -0.01em;
+  }
+  header .wordmark span { color: var(--text-muted); font-weight: 400; }
+
+  header .tagline {
+    color: var(--text-muted);
+    font-size: 14px;
+    max-width: 46ch;
+  }
+
+  main {
+    max-width: 1000px;
+    margin: 0 auto;
+    padding: clamp(20px, 4vw, 48px);
+  }
+
+  .panel {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 22px;
+    margin-bottom: 20px;
+  }
+
+  .panel h2 {
+    font-size: 13px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
+    margin: 0 0 16px;
+  }
+
+  .form-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 14px;
+  }
+
+  .field label {
+    display: block;
+    font-size: 12.5px;
+    color: var(--text-muted);
+    margin-bottom: 6px;
+  }
+
+  select, input[type="text"] {
+    width: 100%;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 14px;
+    padding: 9px 10px;
+    border-radius: var(--radius);
+    outline: none;
+  }
+  select:focus, input:focus { border-color: var(--good); }
+
+  .btn-row {
+    display: flex;
+    gap: 12px;
+    margin-top: 18px;
+    flex-wrap: wrap;
+  }
+
+  .btn {
+    background: var(--good-dim);
+    border: 1px solid var(--good);
+    color: var(--good);
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 14px;
+    font-weight: 500;
+    padding: 10px 20px;
+    border-radius: var(--radius);
+    cursor: pointer;
+    white-space: nowrap;
+  }
+  .btn:hover { background: var(--good); color: #06201C; }
+
+  .btn.secondary {
+    background: transparent;
+    border-color: var(--border);
+    color: var(--text-muted);
+  }
+  .btn.secondary:hover { border-color: var(--text-muted); color: var(--text); background: transparent; }
+
+  .error-msg {
+    color: var(--bad);
+    font-size: 13px;
+    margin-top: 10px;
+  }
+
+  .rule-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 12px 14px;
+    margin-bottom: 10px;
+  }
+  .rule-row .rule-num {
+    color: var(--text-muted);
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 12px;
+    flex-shrink: 0;
+    width: 22px;
+  }
+  .rule-row .rule-text {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    flex: 1;
+  }
+  .rule-row .rule-text .allow { color: var(--good); }
+  .rule-row .rule-text .deny { color: var(--bad); }
+  .rule-row .rule-actions { display: flex; gap: 8px; flex-shrink: 0; }
+  .rule-row button {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 12px;
+    padding: 5px 9px;
+    border-radius: var(--radius);
+    cursor: pointer;
+  }
+  .rule-row button:hover { border-color: var(--bad); color: var(--bad); }
+  .rule-row button.move-btn:hover { border-color: var(--good); color: var(--good); }
+
+  .empty-state {
+    color: var(--text-muted);
+    font-size: 13.5px;
+    padding: 4px 0;
+  }
+
+  .output-tabs {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 14px;
+    flex-wrap: wrap;
+  }
+  .output-tab {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-family: 'IBM Plex Sans', sans-serif;
+    font-size: 13px;
+    padding: 7px 14px;
+    border-radius: var(--radius);
+    cursor: pointer;
+  }
+  .output-tab.active { border-color: var(--good); color: var(--good); background: var(--good-dim); }
+
+  pre.output-block {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 13px;
+    line-height: 1.7;
+    overflow-x: auto;
+    white-space: pre;
+    color: var(--text);
+    margin: 0;
+  }
+
+  .copy-btn {
+    margin-top: 10px;
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: 12.5px;
+    padding: 7px 14px;
+    border-radius: var(--radius);
+    cursor: pointer;
+  }
+  .copy-btn:hover { border-color: var(--good); color: var(--good); }
+
+  .explain {
+    color: var(--text-muted);
+    font-size: 13.5px;
+    line-height: 1.6;
+  }
+  .explain strong { color: var(--text); }
+
+  .note {
+    color: var(--text-muted);
+    font-size: 12.5px;
+    margin-top: 12px;
+    line-height: 1.6;
+  }
+
+  footer {
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 12.5px;
+    padding: 30px 20px 40px;
+  }
+  footer a { color: var(--text-muted); }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="wordmark">acl-gen<span>.</span></div>
+  <div class="tagline">Build a firewall rule once and see the equivalent Cisco IOS ACL, pfSense rule, and iptables command, side by side.</div>
+</header>
+
+<main>
+  <section class="panel">
+    <h2>Add a rule</h2>
+    <div class="form-grid">
+      <div class="field">
+        <label for="f-action">Action</label>
+        <select id="f-action">
+          <option value="allow">Allow</option>
+          <option value="deny">Deny</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="f-direction">Direction</label>
+        <select id="f-direction">
+          <option value="in">Inbound</option>
+          <option value="out">Outbound</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="f-protocol">Protocol</label>
+        <select id="f-protocol">
+          <option value="tcp">TCP</option>
+          <option value="udp">UDP</option>
+          <option value="icmp">ICMP</option>
+          <option value="any">Any</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="f-source">Source</label>
+        <input type="text" id="f-source" value="any" placeholder="any, 10.0.0.0/24, or 10.0.0.5">
+      </div>
+      <div class="field">
+        <label for="f-dest">Destination</label>
+        <input type="text" id="f-dest" value="any" placeholder="any, 10.0.0.0/24, or 10.0.0.5">
+      </div>
+      <div class="field">
+        <label for="f-port">Port</label>
+        <input type="text" id="f-port" value="any" placeholder="any, 22, or 20-21">
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn" id="add-btn">Add rule</button>
+      <button class="btn secondary" id="clear-btn">Clear all rules</button>
+    </div>
+    <div class="error-msg" id="error-msg"></div>
+  </section>
+
+  <section class="panel">
+    <h2>Rule set</h2>
+    <div id="rule-list"></div>
+    <div class="note">Rules are checked in order from top to bottom. On real devices, the first matching rule wins and the rest are skipped, so a broad allow or deny placed too early can silently override rules below it. Use the up and down buttons to reorder.</div>
+  </section>
+
+  <section class="panel" id="output-panel" style="display: none;">
+    <h2>Generated syntax</h2>
+    <div class="output-tabs">
+      <button class="output-tab active" data-target="cisco">Cisco IOS ACL</button>
+      <button class="output-tab" data-target="pfsense">pfSense</button>
+      <button class="output-tab" data-target="iptables">iptables</button>
+    </div>
+    <pre class="output-block" id="output-cisco"></pre>
+    <pre class="output-block" id="output-pfsense" style="display: none;"></pre>
+    <pre class="output-block" id="output-iptables" style="display: none;"></pre>
+    <button class="copy-btn" id="copy-btn">Copy this syntax</button>
+  </section>
+
+  <section class="panel" id="explain-panel" style="display: none;">
+    <h2>What this rule set actually does</h2>
+    <div class="explain" id="explain-text"></div>
+  </section>
+</main>
+
+<footer>
+  Part of a small portfolio of single purpose tools. <a href="https://aipal-staging.cloud/portfolio/">See the others</a>.
+</footer>
+
+<script>
+  const ruleList = document.getElementById('rule-list');
+  const errorMsg = document.getElementById('error-msg');
+  const outputPanel = document.getElementById('output-panel');
+  const explainPanel = document.getElementById('explain-panel');
+  const explainText = document.getElementById('explain-text');
+
+  let rules = [];
+
+  function isValidHost(value) {
+    const v = value.trim().toLowerCase();
+    if (v === 'any') return true;
+    const cidrMatch = v.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})(\/(\d{1,2}))?$/);
+    if (!cidrMatch) return false;
+    const octets = [cidrMatch[1], cidrMatch[2], cidrMatch[3], cidrMatch[4]].map(Number);
+    if (octets.some((o) => o > 255)) return false;
+    if (cidrMatch[6] !== undefined) {
+      const prefix = Number(cidrMatch[6]);
+      if (prefix < 0 || prefix > 32) return false;
+    }
+    return true;
+  }
+
+  function isValidPort(value) {
+    const v = value.trim().toLowerCase();
+    if (v === 'any') return true;
+    if (/^\d{1,5}$/.test(v)) return Number(v) <= 65535;
+    const rangeMatch = v.match(/^(\d{1,5})-(\d{1,5})$/);
+    if (rangeMatch) {
+      const a = Number(rangeMatch[1]);
+      const b = Number(rangeMatch[2]);
+      return a <= 65535 && b <= 65535 && a < b;
+    }
+    return false;
+  }
+
+  function cidrToWildcard(hostStr) {
+    if (hostStr.toLowerCase() === 'any') return { keyword: 'any' };
+    const [ip, prefixStr] = hostStr.split('/');
+    const prefix = prefixStr === undefined ? 32 : Number(prefixStr);
+    if (prefix === 32) return { host: ip };
+    const maskBits = 0xFFFFFFFF << (32 - prefix);
+    const wildcardInt = (~maskBits) >>> 0;
+    const wildcard = [
+      (wildcardInt >>> 24) & 255,
+      (wildcardInt >>> 16) & 255,
+      (wildcardInt >>> 8) & 255,
+      wildcardInt & 255,
+    ].join('.');
+    return { network: ip, wildcard };
+  }
+
+  function cidrToNetmask(hostStr) {
+    const [, prefixStr] = hostStr.split('/');
+    const prefix = prefixStr === undefined ? 32 : Number(prefixStr);
+    if (prefix === 0) return '0.0.0.0';
+    const maskInt = (0xFFFFFFFF << (32 - prefix)) >>> 0;
+    return [
+      (maskInt >>> 24) & 255,
+      (maskInt >>> 16) & 255,
+      (maskInt >>> 8) & 255,
+      maskInt & 255,
+    ].join('.');
+  }
+
+  function ciscoHostClause(hostStr) {
+    if (hostStr.toLowerCase() === 'any') return 'any';
+    const parsed = cidrToWildcard(hostStr);
+    if (parsed.host) return 'host ' + parsed.host;
+    return parsed.network + ' ' + parsed.wildcard;
+  }
+
+  function pfHostClause(hostStr) {
+    if (hostStr.toLowerCase() === 'any') return 'any';
+    const [ip, prefix] = hostStr.split('/');
+    if (prefix === undefined) return ip;
+    return ip + '/' + prefix;
+  }
+
+  function iptablesHostFlag(hostStr, flag) {
+    if (hostStr.toLowerCase() === 'any') return '';
+    const [ip, prefix] = hostStr.split('/');
+    const cidr = prefix === undefined ? ip + '/32' : ip + '/' + prefix;
+    return ' ' + flag + ' ' + cidr;
+  }
+
+  function ciscoPortClause(port) {
+    if (port.toLowerCase() === 'any') return '';
+    if (port.includes('-')) {
+      const [a, b] = port.split('-');
+      return ' range ' + a + ' ' + b;
+    }
+    return ' eq ' + port;
+  }
+
+  function addRule() {
+    errorMsg.textContent = '';
+    const action = document.getElementById('f-action').value;
+    const direction = document.getElementById('f-direction').value;
+    const protocol = document.getElementById('f-protocol').value;
+    const source = document.getElementById('f-source').value.trim() || 'any';
+    const destination = document.getElementById('f-dest').value.trim() || 'any';
+    const port = document.getElementById('f-port').value.trim() || 'any';
+
+    if (!isValidHost(source)) {
+      errorMsg.textContent = 'Source must be "any", a single IP, or a CIDR block like 10.0.0.0/24.';
+      return;
+    }
+    if (!isValidHost(destination)) {
+      errorMsg.textContent = 'Destination must be "any", a single IP, or a CIDR block like 10.0.0.0/24.';
+      return;
+    }
+    if (port !== 'any' && protocol === 'icmp') {
+      errorMsg.textContent = 'ICMP does not use ports. Set port to "any" for an ICMP rule.';
+      return;
+    }
+    if (!isValidPort(port)) {
+      errorMsg.textContent = 'Port must be "any", a single port like 22, or a range like 20-21.';
+      return;
+    }
+
+    rules.push({ action, direction, protocol, source, destination, port });
+    renderRules();
+    renderOutput();
+  }
+
+  function removeRule(index) {
+    rules.splice(index, 1);
+    renderRules();
+    renderOutput();
+  }
+
+  function moveRule(index, delta) {
+    const target = index + delta;
+    if (target < 0 || target >= rules.length) return;
+    const temp = rules[index];
+    rules[index] = rules[target];
+    rules[target] = temp;
+    renderRules();
+    renderOutput();
+  }
+
+  function ruleSummary(r) {
+    const dir = r.direction === 'in' ? 'inbound' : 'outbound';
+    const proto = r.protocol === 'any' ? 'any protocol' : r.protocol.toUpperCase();
+    const portPart = r.port === 'any' || r.protocol === 'icmp' ? '' : ' on port ' + r.port;
+    return proto + ' ' + dir + ' from ' + r.source + ' to ' + r.destination + portPart;
+  }
+
+  function renderRules() {
+    ruleList.innerHTML = '';
+    if (rules.length === 0) {
+      ruleList.innerHTML = '<div class="empty-state">No rules yet. Add one above to get started.</div>';
+      return;
+    }
+    rules.forEach((r, i) => {
+      const row = document.createElement('div');
+      row.className = 'rule-row';
+      const actionClass = r.action === 'allow' ? 'allow' : 'deny';
+      row.innerHTML =
+        '<div class="rule-num">' + (i + 1) + '</div>' +
+        '<div class="rule-text"><span class="' + actionClass + '">' + r.action.toUpperCase() + '</span> ' + ruleSummary(r) + '</div>' +
+        '<div class="rule-actions">' +
+        '<button class="move-btn" data-move="up" data-index="' + i + '">Up</button>' +
+        '<button class="move-btn" data-move="down" data-index="' + i + '">Down</button>' +
+        '<button data-remove="' + i + '">Remove</button>' +
+        '</div>';
+      ruleList.appendChild(row);
+    });
+
+    ruleList.querySelectorAll('[data-remove]').forEach((btn) => {
+      btn.addEventListener('click', () => removeRule(Number(btn.dataset.remove)));
+    });
+    ruleList.querySelectorAll('[data-move]').forEach((btn) => {
+      btn.addEventListener('click', () => moveRule(Number(btn.dataset.index), btn.dataset.move === 'up' ? -1 : 1));
+    });
+  }
+
+  function generateCisco() {
+    if (rules.length === 0) return '';
+    const lines = ['access-list 101 remark Generated by acl-gen.'];
+    rules.forEach((r) => {
+      const verb = r.action === 'allow' ? 'permit' : 'deny';
+      const proto = r.protocol === 'any' ? 'ip' : r.protocol;
+      const src = ciscoHostClause(r.source);
+      const dst = ciscoHostClause(r.destination);
+      const portPart = r.protocol === 'tcp' || r.protocol === 'udp' ? ciscoPortClause(r.port) : '';
+      lines.push('access-list 101 ' + verb + ' ' + proto + ' ' + src + ' ' + dst + portPart);
+    });
+    lines.push('!');
+    lines.push('interface GigabitEthernet0/1');
+    lines.push(' ip access-group 101 ' + (rules[0].direction === 'in' ? 'in' : 'out'));
+    return lines.join('\n');
+  }
+
+  function generatePf() {
+    if (rules.length === 0) return '';
+    const lines = [];
+    rules.forEach((r) => {
+      const verb = r.action === 'allow' ? 'pass' : 'block';
+      const dir = r.direction === 'in' ? 'in' : 'out';
+      const proto = r.protocol === 'any' ? '' : ' proto ' + r.protocol;
+      const src = pfHostClause(r.source);
+      const dst = pfHostClause(r.destination);
+      const port = (r.port !== 'any' && r.protocol !== 'icmp') ? ' port ' + r.port.replace('-', ':') : '';
+      lines.push(verb + ' ' + dir + proto + ' from ' + src + ' to ' + dst + port);
+    });
+    return lines.join('\n');
+  }
+
+  function generateIptables() {
+    if (rules.length === 0) return '';
+    const lines = [];
+    rules.forEach((r) => {
+      const chain = r.direction === 'in' ? 'INPUT' : 'OUTPUT';
+      const target = r.action === 'allow' ? 'ACCEPT' : 'DROP';
+      const proto = r.protocol === 'any' ? '' : ' -p ' + r.protocol;
+      const src = iptablesHostFlag(r.source, '-s');
+      const dst = iptablesHostFlag(r.destination, '-d');
+      const port = (r.port !== 'any' && (r.protocol === 'tcp' || r.protocol === 'udp'))
+        ? ' --dport ' + r.port.replace('-', ':')
+        : '';
+      lines.push('iptables -A ' + chain + proto + src + dst + port + ' -j ' + target);
+    });
+    return lines.join('\n');
+  }
+
+  function generateExplanation() {
+    if (rules.length === 0) return '';
+    const parts = rules.map((r, i) => {
+      const verb = r.action === 'allow' ? 'Allows' : 'Blocks';
+      return (i + 1) + '. ' + verb + ' ' + ruleSummary(r) + '.';
+    });
+    return '<strong>Rules are evaluated in this order, top to bottom.</strong> The first rule that matches a given packet is applied and the rest are ignored for that packet.<br><br>' + parts.join('<br>');
+  }
+
+  function renderOutput() {
+    if (rules.length === 0) {
+      outputPanel.style.display = 'none';
+      explainPanel.style.display = 'none';
+      return;
+    }
+    outputPanel.style.display = 'block';
+    explainPanel.style.display = 'block';
+    document.getElementById('output-cisco').textContent = generateCisco();
+    document.getElementById('output-pfsense').textContent = generatePf();
+    document.getElementById('output-iptables').textContent = generateIptables();
+    explainText.innerHTML = generateExplanation();
+  }
+
+  document.getElementById('add-btn').addEventListener('click', addRule);
+  document.getElementById('clear-btn').addEventListener('click', () => {
+    rules = [];
+    renderRules();
+    renderOutput();
+  });
+
+  document.querySelectorAll('.output-tab').forEach((tab) => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.output-tab').forEach((t) => t.classList.remove('active'));
+      tab.classList.add('active');
+      document.querySelectorAll('.output-block').forEach((block) => { block.style.display = 'none'; });
+      document.getElementById('output-' + tab.dataset.target).style.display = 'block';
+    });
+  });
+
+  document.getElementById('copy-btn').addEventListener('click', () => {
+    const activeTab = document.querySelector('.output-tab.active').dataset.target;
+    const text = document.getElementById('output-' + activeTab).textContent;
+    navigator.clipboard.writeText(text).then(() => {
+      const btn = document.getElementById('copy-btn');
+      const original = btn.textContent;
+      btn.textContent = 'Copied';
+      setTimeout(() => { btn.textContent = original; }, 1500);
+    });
+  });
+
+  renderRules();
+</script>
+
+</body>
+</html>
