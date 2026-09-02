@@ -178,6 +178,33 @@
   }
   .rule-row button:hover { border-color: var(--bad); color: var(--bad); }
   .rule-row button.move-btn:hover { border-color: var(--good); color: var(--good); }
+  .rule-row.shadowed { border-color: var(--warn); }
+  .shadow-tag {
+    display: inline-block;
+    margin-top: 4px;
+    color: var(--warn);
+    font-size: 11.5px;
+    font-family: 'IBM Plex Sans', sans-serif;
+  }
+
+  .tester-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+    gap: 14px;
+    margin-bottom: 16px;
+  }
+
+  .test-result {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px;
+    font-size: 13.5px;
+    line-height: 1.6;
+  }
+  .test-result.match-allow { border-color: var(--good); background: var(--good-dim); color: var(--text); }
+  .test-result.match-deny { border-color: var(--bad); background: var(--bad-dim); color: var(--text); }
+  .test-result.match-none { border-color: var(--warn); background: var(--warn-dim); color: var(--text); }
+  .test-result strong { display: block; margin-bottom: 4px; }
 
   .empty-state {
     color: var(--text-muted);
@@ -302,6 +329,7 @@
     <div class="btn-row">
       <button class="btn" id="add-btn">Add rule</button>
       <button class="btn secondary" id="clear-btn">Clear all rules</button>
+      <button class="btn secondary" id="share-btn">Copy shareable link</button>
     </div>
     <div class="error-msg" id="error-msg"></div>
   </section>
@@ -310,6 +338,45 @@
     <h2>Rule set</h2>
     <div id="rule-list"></div>
     <div class="note">Rules are checked in order from top to bottom. On real devices, the first matching rule wins and the rest are skipped, so a broad allow or deny placed too early can silently override rules below it. Use the up and down buttons to reorder.</div>
+    <div class="note" id="shadow-warning" style="display: none;"></div>
+  </section>
+
+  <section class="panel" id="tester-panel" style="display: none;">
+    <h2>Test a packet against this rule set</h2>
+    <div class="tester-grid">
+      <div class="field">
+        <label for="t-direction">Direction</label>
+        <select id="t-direction">
+          <option value="in">Inbound</option>
+          <option value="out">Outbound</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="t-protocol">Protocol</label>
+        <select id="t-protocol">
+          <option value="tcp">TCP</option>
+          <option value="udp">UDP</option>
+          <option value="icmp">ICMP</option>
+        </select>
+      </div>
+      <div class="field">
+        <label for="t-source">Source IP</label>
+        <input type="text" id="t-source" placeholder="10.0.0.5">
+      </div>
+      <div class="field">
+        <label for="t-dest">Destination IP</label>
+        <input type="text" id="t-dest" placeholder="10.0.0.100">
+      </div>
+      <div class="field">
+        <label for="t-port">Port</label>
+        <input type="text" id="t-port" placeholder="22">
+      </div>
+    </div>
+    <div class="btn-row">
+      <button class="btn" id="test-btn">Test packet</button>
+    </div>
+    <div class="error-msg" id="test-error"></div>
+    <div id="test-result-wrap" style="margin-top: 14px; display: none;"></div>
   </section>
 
   <section class="panel" id="output-panel" style="display: none;">
@@ -318,11 +385,18 @@
       <button class="output-tab active" data-target="cisco">Cisco IOS ACL</button>
       <button class="output-tab" data-target="pfsense">pfSense</button>
       <button class="output-tab" data-target="iptables">iptables</button>
+      <button class="output-tab" data-target="aws">AWS Network ACL</button>
+      <button class="output-tab" data-target="azure">Azure NSG</button>
     </div>
     <pre class="output-block" id="output-cisco"></pre>
     <pre class="output-block" id="output-pfsense" style="display: none;"></pre>
     <pre class="output-block" id="output-iptables" style="display: none;"></pre>
-    <button class="copy-btn" id="copy-btn">Copy this syntax</button>
+    <pre class="output-block" id="output-aws" style="display: none;"></pre>
+    <pre class="output-block" id="output-azure" style="display: none;"></pre>
+    <div class="btn-row">
+      <button class="copy-btn" id="copy-btn">Copy this syntax</button>
+      <button class="copy-btn" id="download-btn">Download as .txt</button>
+    </div>
   </section>
 
   <section class="panel" id="explain-panel" style="display: none;">
@@ -341,6 +415,8 @@
   const outputPanel = document.getElementById('output-panel');
   const explainPanel = document.getElementById('explain-panel');
   const explainText = document.getElementById('explain-text');
+  const shadowWarning = document.getElementById('shadow-warning');
+  const testerPanel = document.getElementById('tester-panel');
 
   let rules = [];
 
@@ -430,6 +506,126 @@
     return ' eq ' + port;
   }
 
+  function protocolToAwsNumber(protocol) {
+    if (protocol === 'tcp') return '6';
+    if (protocol === 'udp') return '17';
+    if (protocol === 'icmp') return '1';
+    return '-1';
+  }
+
+  function hostToAwsCidr(hostStr) {
+    if (hostStr.toLowerCase() === 'any') return '0.0.0.0/0';
+    const [ip, prefix] = hostStr.split('/');
+    return prefix === undefined ? ip + '/32' : ip + '/' + prefix;
+  }
+
+  function protocolToAzure(protocol) {
+    if (protocol === 'tcp') return 'Tcp';
+    if (protocol === 'udp') return 'Udp';
+    if (protocol === 'icmp') return 'Icmp';
+    return '*';
+  }
+
+  function hostToAzurePrefix(hostStr) {
+    return hostStr.toLowerCase() === 'any' ? "'*'" : hostStr;
+  }
+
+  // --- Matching engine, shared by shadow detection and the packet tester ---
+
+  function ipToInt(ip) {
+    const parts = ip.split('.').map(Number);
+    return ((parts[0] << 24) | (parts[1] << 16) | (parts[2] << 8) | parts[3]) >>> 0;
+  }
+
+  function hostRange(hostStr) {
+    if (hostStr.toLowerCase() === 'any') return null;
+    const [ip, prefixStr] = hostStr.split('/');
+    const prefix = prefixStr === undefined ? 32 : Number(prefixStr);
+    const ipInt = ipToInt(ip);
+    const maskBits = prefix === 0 ? 0 : (0xFFFFFFFF << (32 - prefix)) >>> 0;
+    const network = (ipInt & maskBits) >>> 0;
+    const hostBits = (~maskBits) >>> 0;
+    const broadcast = (network | hostBits) >>> 0;
+    return { start: network, end: broadcast };
+  }
+
+  function hostContainsHost(outerHost, innerHost) {
+    const outerRange = hostRange(outerHost);
+    if (outerRange === null) return true;
+    const innerRange = hostRange(innerHost);
+    if (innerRange === null) return false;
+    return outerRange.start <= innerRange.start && outerRange.end >= innerRange.end;
+  }
+
+  function hostContainsIp(hostStr, ip) {
+    if (hostStr.toLowerCase() === 'any') return true;
+    const range = hostRange(hostStr);
+    const ipInt = ipToInt(ip);
+    return ipInt >= range.start && ipInt <= range.end;
+  }
+
+  function portRangeOf(portStr) {
+    if (portStr.toLowerCase() === 'any') return null;
+    if (portStr.includes('-')) {
+      const [a, b] = portStr.split('-').map(Number);
+      return { start: a, end: b };
+    }
+    const p = Number(portStr);
+    return { start: p, end: p };
+  }
+
+  function portContainsPort(outerPort, innerPort) {
+    const outer = portRangeOf(outerPort);
+    if (outer === null) return true;
+    const inner = portRangeOf(innerPort);
+    if (inner === null) return false;
+    return outer.start <= inner.start && outer.end >= inner.end;
+  }
+
+  function portMatchesValue(rulePort, packetPort) {
+    if (rulePort.toLowerCase() === 'any') return true;
+    const range = portRangeOf(rulePort);
+    return packetPort >= range.start && packetPort <= range.end;
+  }
+
+  // Does rule "outer" match every packet that rule "inner" would also match.
+  // If so, "inner" can never be reached once "outer" is placed above it.
+  function ruleCovers(outer, inner) {
+    if (outer.direction !== inner.direction) return false;
+    if (outer.protocol !== 'any' && outer.protocol !== inner.protocol) return false;
+    if (!hostContainsHost(outer.source, inner.source)) return false;
+    if (!hostContainsHost(outer.destination, inner.destination)) return false;
+    const portsRelevant = inner.protocol === 'tcp' || inner.protocol === 'udp';
+    if (portsRelevant && (outer.protocol === 'tcp' || outer.protocol === 'udp' || outer.protocol === 'any')) {
+      if (!portContainsPort(outer.port, inner.port)) return false;
+    }
+    return true;
+  }
+
+  function findShadowedRules() {
+    const shadowedBy = {};
+    rules.forEach((inner, i) => {
+      for (let j = 0; j < i; j++) {
+        if (ruleCovers(rules[j], inner)) {
+          shadowedBy[i] = j;
+          break;
+        }
+      }
+    });
+    return shadowedBy;
+  }
+
+  function ruleMatchesPacket(rule, packet) {
+    if (rule.direction !== packet.direction) return false;
+    if (rule.protocol !== 'any' && rule.protocol !== packet.protocol) return false;
+    if (!hostContainsIp(rule.source, packet.sourceIp)) return false;
+    if (!hostContainsIp(rule.destination, packet.destIp)) return false;
+    if (packet.protocol === 'tcp' || packet.protocol === 'udp') {
+      if (!portMatchesValue(rule.port, packet.port)) return false;
+    }
+    return true;
+  }
+
   function addRule() {
     errorMsg.textContent = '';
     const action = document.getElementById('f-action').value;
@@ -490,13 +686,17 @@
       ruleList.innerHTML = '<div class="empty-state">No rules yet. Add one above to get started.</div>';
       return;
     }
+    const shadowedBy = findShadowedRules();
     rules.forEach((r, i) => {
       const row = document.createElement('div');
-      row.className = 'rule-row';
+      row.className = 'rule-row' + (shadowedBy[i] !== undefined ? ' shadowed' : '');
       const actionClass = r.action === 'allow' ? 'allow' : 'deny';
+      const shadowTag = shadowedBy[i] !== undefined
+        ? '<div class="shadow-tag">Unreachable. Rule ' + (shadowedBy[i] + 1) + ' above already matches every packet this rule would match.</div>'
+        : '';
       row.innerHTML =
         '<div class="rule-num">' + (i + 1) + '</div>' +
-        '<div class="rule-text"><span class="' + actionClass + '">' + r.action.toUpperCase() + '</span> ' + ruleSummary(r) + '</div>' +
+        '<div class="rule-text"><span class="' + actionClass + '">' + r.action.toUpperCase() + '</span> ' + ruleSummary(r) + shadowTag + '</div>' +
         '<div class="rule-actions">' +
         '<button class="move-btn" data-move="up" data-index="' + i + '">Up</button>' +
         '<button class="move-btn" data-move="down" data-index="' + i + '">Down</button>' +
@@ -504,6 +704,14 @@
         '</div>';
       ruleList.appendChild(row);
     });
+
+    const shadowCount = Object.keys(shadowedBy).length;
+    if (shadowCount > 0) {
+      shadowWarning.style.display = 'block';
+      shadowWarning.innerHTML = '<strong style="color: var(--warn);">' + shadowCount + ' rule' + (shadowCount === 1 ? ' is' : 's are') + ' unreachable.</strong> They are fully covered by a rule placed above them and will never be evaluated on a real device. Reorder or remove them to fix this.';
+    } else {
+      shadowWarning.style.display = 'none';
+    }
 
     ruleList.querySelectorAll('[data-remove]').forEach((btn) => {
       btn.addEventListener('click', () => removeRule(Number(btn.dataset.remove)));
@@ -562,11 +770,53 @@
     return lines.join('\n');
   }
 
+  function generateAwsNacl() {
+    if (rules.length === 0) return '';
+    const lines = ['# AWS Network ACLs, not Security Groups, since only NACLs support explicit deny rules and rule ordering.'];
+    rules.forEach((r, i) => {
+      const ruleNumber = (i + 1) * 100;
+      const egress = r.direction === 'in' ? 'false' : 'true';
+      const action = r.action === 'allow' ? 'allow' : 'deny';
+      const proto = protocolToAwsNumber(r.protocol);
+      const cidr = hostToAwsCidr(r.direction === 'in' ? r.source : r.destination);
+      const portFlag = (r.port !== 'any' && (r.protocol === 'tcp' || r.protocol === 'udp'))
+        ? (' --port-range ' + (r.port.includes('-')
+            ? 'From=' + r.port.split('-')[0] + ',To=' + r.port.split('-')[1]
+            : 'From=' + r.port + ',To=' + r.port))
+        : '';
+      lines.push('aws ec2 create-network-acl-entry --network-acl-id acl-EXAMPLE --rule-number ' + ruleNumber +
+        ' --protocol ' + proto + portFlag + ' --cidr-block ' + cidr + ' --egress ' + egress + ' --rule-action ' + action);
+    });
+    return lines.join('\n');
+  }
+
+  function generateAzureNsg() {
+    if (rules.length === 0) return '';
+    const lines = [];
+    rules.forEach((r, i) => {
+      const priority = 100 + i * 10;
+      const direction = r.direction === 'in' ? 'Inbound' : 'Outbound';
+      const access = r.action === 'allow' ? 'Allow' : 'Deny';
+      const proto = protocolToAzure(r.protocol);
+      const srcPrefix = hostToAzurePrefix(r.source);
+      const dstPrefix = hostToAzurePrefix(r.destination);
+      const portRangesFlag = (r.protocol === 'tcp' || r.protocol === 'udp')
+        ? (' --destination-port-ranges ' + (r.port === 'any' ? "'*'" : r.port))
+        : '';
+      lines.push('az network nsg rule create --name Rule' + (i + 1) + ' --nsg-name MyNSG --priority ' + priority +
+        ' --direction ' + direction + ' --access ' + access + ' --protocol ' + proto +
+        ' --source-address-prefixes ' + srcPrefix + ' --destination-address-prefixes ' + dstPrefix + portRangesFlag);
+    });
+    return lines.join('\n');
+  }
+
   function generateExplanation() {
     if (rules.length === 0) return '';
+    const shadowedBy = findShadowedRules();
     const parts = rules.map((r, i) => {
       const verb = r.action === 'allow' ? 'Allows' : 'Blocks';
-      return (i + 1) + '. ' + verb + ' ' + ruleSummary(r) + '.';
+      const shadowNote = shadowedBy[i] !== undefined ? ' (unreachable, already covered by rule ' + (shadowedBy[i] + 1) + ')' : '';
+      return (i + 1) + '. ' + verb + ' ' + ruleSummary(r) + '.' + shadowNote;
     });
     return '<strong>Rules are evaluated in this order, top to bottom.</strong> The first rule that matches a given packet is applied and the rest are ignored for that packet.<br><br>' + parts.join('<br>');
   }
@@ -575,15 +825,20 @@
     if (rules.length === 0) {
       outputPanel.style.display = 'none';
       explainPanel.style.display = 'none';
+      testerPanel.style.display = 'none';
       return;
     }
     outputPanel.style.display = 'block';
     explainPanel.style.display = 'block';
+    testerPanel.style.display = 'block';
     document.getElementById('output-cisco').textContent = generateCisco();
     document.getElementById('output-pfsense').textContent = generatePf();
     document.getElementById('output-iptables').textContent = generateIptables();
+    document.getElementById('output-aws').textContent = generateAwsNacl();
+    document.getElementById('output-azure').textContent = generateAzureNsg();
     explainText.innerHTML = generateExplanation();
   }
+
 
   document.getElementById('add-btn').addEventListener('click', addRule);
   document.getElementById('clear-btn').addEventListener('click', () => {
@@ -612,7 +867,114 @@
     });
   });
 
+  document.getElementById('download-btn').addEventListener('click', () => {
+    const activeTab = document.querySelector('.output-tab.active').dataset.target;
+    const text = document.getElementById('output-' + activeTab).textContent;
+    const blob = new Blob([text], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'acl-gen-' + activeTab + '.txt';
+    a.click();
+    URL.revokeObjectURL(url);
+  });
+
+  // --- Packet tester ---
+
+  document.getElementById('t-protocol').addEventListener('change', () => {
+    const proto = document.getElementById('t-protocol').value;
+    document.getElementById('t-port').disabled = proto === 'icmp';
+    if (proto === 'icmp') document.getElementById('t-port').value = '';
+  });
+
+  document.getElementById('test-btn').addEventListener('click', () => {
+    const testError = document.getElementById('test-error');
+    const resultWrap = document.getElementById('test-result-wrap');
+    testError.textContent = '';
+
+    const direction = document.getElementById('t-direction').value;
+    const protocol = document.getElementById('t-protocol').value;
+    const sourceIp = document.getElementById('t-source').value.trim();
+    const destIp = document.getElementById('t-dest').value.trim();
+    const portStr = document.getElementById('t-port').value.trim();
+
+    if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(sourceIp) || sourceIp.split('.').some((o) => Number(o) > 255)) {
+      testError.textContent = 'Enter a single source IP, for example 10.0.0.5, not a range.';
+      resultWrap.style.display = 'none';
+      return;
+    }
+    if (!/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(destIp) || destIp.split('.').some((o) => Number(o) > 255)) {
+      testError.textContent = 'Enter a single destination IP, for example 10.0.0.100, not a range.';
+      resultWrap.style.display = 'none';
+      return;
+    }
+    let port = null;
+    if (protocol !== 'icmp') {
+      if (!/^\d{1,5}$/.test(portStr) || Number(portStr) > 65535) {
+        testError.textContent = 'Enter a single port, for example 22.';
+        resultWrap.style.display = 'none';
+        return;
+      }
+      port = Number(portStr);
+    }
+
+    const packet = { direction, protocol, sourceIp, destIp, port };
+    const matchIndex = rules.findIndex((r) => ruleMatchesPacket(r, packet));
+
+    resultWrap.style.display = 'block';
+    resultWrap.innerHTML = '';
+    const box = document.createElement('div');
+    if (matchIndex === -1) {
+      box.className = 'test-result match-none';
+      box.innerHTML = '<strong>No rule matches. Implicit deny applies.</strong>Most firewalls and ACLs deny everything by default once a packet falls through every explicit rule, so this packet would be blocked.';
+    } else {
+      const matched = rules[matchIndex];
+      const verb = matched.action === 'allow' ? 'ALLOWED' : 'BLOCKED';
+      box.className = matched.action === 'allow' ? 'test-result match-allow' : 'test-result match-deny';
+      box.innerHTML = '<strong>' + verb + ' by rule ' + (matchIndex + 1) + '.</strong>' + ruleSummary(matched) + '.';
+    }
+    resultWrap.appendChild(box);
+  });
+
+  // --- Shareable permalink ---
+
+  function encodeRules() {
+    return encodeURIComponent(btoa(JSON.stringify(rules)));
+  }
+
+  function decodeRulesFromUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const encoded = params.get('rules');
+    if (!encoded) return null;
+    try {
+      const decoded = JSON.parse(atob(decodeURIComponent(encoded)));
+      if (Array.isArray(decoded)) return decoded;
+    } catch {
+      return null;
+    }
+    return null;
+  }
+
+  document.getElementById('share-btn').addEventListener('click', () => {
+    if (rules.length === 0) {
+      errorMsg.textContent = 'Add at least one rule before sharing a link.';
+      return;
+    }
+    const url = window.location.origin + window.location.pathname + '?rules=' + encodeRules();
+    window.history.replaceState(null, '', url);
+    navigator.clipboard.writeText(url).then(() => {
+      const btn = document.getElementById('share-btn');
+      const original = btn.textContent;
+      btn.textContent = 'Link copied';
+      setTimeout(() => { btn.textContent = original; }, 1500);
+    });
+  });
+
+  const loadedRules = decodeRulesFromUrl();
+  if (loadedRules) rules = loadedRules;
+
   renderRules();
+  renderOutput();
 </script>
 
 </body>
