@@ -2,7 +2,7 @@
 
 A firewall rule and ACL syntax translator. Build a rule once using a simple form, and see the equivalent Cisco IOS ACL, pfSense rule, iptables command, AWS Network ACL, and Azure NSG rule generated side by side.
 
-Live at: https://aipal-staging.cloud/acl-gen/
+Live at: https://timfas.com/acl-gen/
 
 ## What it does
 
@@ -39,4 +39,4 @@ Open index.html in a browser, no server required.
 
 ## Part of a portfolio
 
-This is one of several small, single purpose web tools built for a public portfolio. See the full list at https://aipal-staging.cloud/portfolio/
+This is one of several small, single purpose web tools built for a public portfolio. See the full list at https://timfas.com/
